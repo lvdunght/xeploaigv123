@@ -1,226 +1,253 @@
-import io
-from datetime import datetime
-
-import pandas as pd
 import streamlit as st
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+import pandas as pd
+import numpy as np
+from io import BytesIO
 
-st.set_page_config(
-    page_title="Đánh giá kết quả thực hiện nhiệm vụ",
-    page_icon="📊",
-    layout="wide",
-)
+st.set_page_config(page_title="Đánh giá, xếp loại giảng viên 2026", layout="wide")
+st.title("Ứng dụng đánh giá, xếp loại chất lượng giảng viên năm 2026")
+st.caption("Chuyển đổi từ mẫu Excel người dùng cung cấp. Các kết quả được tính tự động theo các quy tắc và công thức trong workbook.")
 
-st.title("ĐÁNH GIÁ KẾT QUẢ THỰC HIỆN CHỨC TRÁCH, NHIỆM VỤ")
-st.caption("Ứng dụng chuyển đổi từ biểu mẫu Excel 1.MS01.xlsx")
-
-st.info(
-    "Nhập số liệu thực hiện và các tiêu chí NCKH. Ứng dụng tự động tính điểm, "
-    "đánh giá điều kiện và xếp loại theo công thức trong file Excel gốc."
-)
-
-# -------------------- Input --------------------
-st.subheader("1. Kết quả thực hiện nhiệm vụ")
-
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.markdown("**Giảng dạy (40%)**")
-    teaching_target = st.number_input("Định mức giảng dạy", min_value=0.0, value=270.0, step=1.0)
-    teaching_done = st.number_input("Thực hiện giảng dạy", min_value=0.0, value=0.0, step=1.0)
-with c2:
-    st.markdown("**Nghiên cứu khoa học (40%)**")
-    research_target = st.number_input("Ngưỡng NCKH (điểm PL02)", min_value=0.0, value=600.0, step=1.0)
-    research_done = st.number_input("Điểm NCKH thực hiện", min_value=0.0, value=0.0, step=1.0)
-with c3:
-    st.markdown("**Nhiệm vụ khác (20%)**")
-    other_target = st.number_input("Định mức nhiệm vụ khác", min_value=0.0, value=350.0, step=1.0)
-    other_done = st.number_input("Thực hiện nhiệm vụ khác", min_value=0.0, value=0.0, step=1.0)
-
-st.divider()
-st.subheader("2. Điều kiện và điểm quy đổi nghiên cứu khoa học")
-
-rank_labels = {
-    1: "1 – Giáo sư / Phó Giáo sư",
-    2: "2 – Tiến sĩ",
-    3: "3 – Đại học / Thạc sĩ",
-}
-rank_label = st.selectbox("Chức danh", list(rank_labels.values()), index=0)
-rank = {v: k for k, v in rank_labels.items()}[rank_label]
-
-binary_labels = [
-    "Có bài WoS/Scopus Q1/Q2",
-    "Hướng dẫn SV/HV có bài WoS/Scopus Q1/Q2",
-    "Hướng dẫn SV nghiên cứu khoa học đạt giải 1–3",
-    "Có bằng sáng chế",
-    "Có công trình mục 3 hoặc 5 B1",
-    "Có công trình mục 1–6 B1",
+DEPARTMENTS = [
+    "Khoa Toán - Tin", "Khoa Lý - Hóa",
+    "Khoa Sinh - Nông nghiệp - Môi trường",
+    "Khoa Ngữ văn - Truyền thông", "Khoa Sử - Địa - Chính trị",
+    "Khoa Tâm lý - Giáo dục - CTXH", "Khoa GD Tiểu học - Mầm non",
+    "Khoa GD Nghệ thuật - Thể chất"
 ]
-binary_keys = ["C", "D", "E", "F", "G", "H"]
-binary_values = {}
-cols = st.columns(3)
-for i, (label, key) in enumerate(zip(binary_labels, binary_keys)):
-    with cols[i % 3]:
-        binary_values[key] = 1 if st.checkbox(label, value=False, key=f"binary_{key}") else 0
+GROUPS = ["GV thường", "GV QL/kiêm nhiệm"]
+RANKS = ["GS/PGS", "TS", "ĐH/ThS"]
+STATUS = ["Bình thường", "Năm đầu sau tập sự/chuyển về", "Tập sự"]
+YESNO = ["Có", "Không"]
+PASS = ["Đạt", "Không đạt"]
 
-research_score = st.number_input(
-    "Điểm NCKH quy đổi theo Bảng 1, Phụ lục 02 (điểm)",
-    min_value=0.0,
-    value=0.0,
-    step=1.0,
-    help="Nhập điểm quy đổi NCKH dùng để so sánh với ngưỡng áp dụng theo chức danh.",
-)
+INPUT_COLS = [
+    "Mã CB","Họ và tên","Đơn vị","Nhóm NCKH","Chức danh/trình độ",
+    "Tỷ lệ ĐM NCKH QL/KN (%)","Trạng thái định mức","Số tháng công tác",
+    "Số tháng tính NCKH","Nghỉ thai sản","Số tháng nghỉ không tham gia",
+    "ĐM GD gốc","TH GD","Điểm NCKH TH","TH NVK","Chất lượng GD",
+    "Tiêu chí chung","Có bài Q1/Q2","HD SV/HV có Q1/Q2",
+    "HD SV NCKH đạt giải","Bằng sáng chế","CT mục 3/5 B1","CT mục 1-6 B1",
+    "Điểm vi phạm","Có QĐ kỷ luật"
+]
+OUTPUT_COLS = [
+    "ĐM GD áp dụng","%GD","Ngưỡng NCKH chuẩn","Ngưỡng NCKH áp dụng","%NCKH",
+    "ĐM NVK áp dụng","%NVK","GD x 0,4","NCKH x 0,4","NVK x 0,2",
+    "Tổng %","Đủ ĐK NCKH HTT","Đủ ĐK bổ sung HTX","Đủ ĐK đánh giá",
+    "Xếp loại cơ sở","Xếp loại cuối","Cảnh báo / lý do",
+    "Tổng % TNTT (GD 50% + NCKH 50%)","Xếp TNTT","Cảnh báo TNTT"
+]
+def blank_record():
+    return {c: None for c in INPUT_COLS}
 
-# -------------------- Calculations (mirror workbook formulas) --------------------
-teaching_pct = (teaching_done / teaching_target * 100 * 0.4) if teaching_target > 0 else 0.0
-research_pct = (research_done / research_target * 100 * 0.4) if research_target > 0 else 0.0
-other_pct = min(other_done / other_target * 100 * 0.2, 20.0) if other_target > 0 else 0.0
-total_pct = teaching_pct + research_pct + other_pct
+if "records" not in st.session_state:
+    st.session_state.records = pd.DataFrame([blank_record()])
 
-# Excel I8 = IF(OR(C8=1,D8=1,E8=1,G8=1,H8=1),"Đạt","Không đạt")
-additional_criteria = any(binary_values[k] == 1 for k in ["C", "D", "E", "G", "H"])
-additional_status = "Đạt" if additional_criteria else "Không đạt"
+def num(v, default=0.0):
+    try:
+        if pd.isna(v) or v == "": return default
+        return float(v)
+    except Exception: return default
 
-# Excel J8 = IF(B8=3,1,IF(B8=2,1.5,IF(B8=1,2,"")))
-research_threshold = {1: 2.0, 2: 1.5, 3: 1.0}[rank]
-research_status = "Đạt" if research_score >= research_threshold else "Không đạt"
+def calculate(row):
+    name = str(row.get("Họ và tên") or "").strip()
+    if not name:
+        return {}
+    group = row.get("Nhóm NCKH") or "GV thường"
+    rank = row.get("Chức danh/trình độ") or "ĐH/ThS"
+    status = row.get("Trạng thái định mức") or "Bình thường"
+    g = num(row.get("Tỷ lệ ĐM NCKH QL/KN (%)"),100)
+    months_work = num(row.get("Số tháng công tác"),12)
+    months_research = num(row.get("Số tháng tính NCKH"),12)
+    leave = num(row.get("Số tháng nghỉ không tham gia"),0)
+    gd_base = num(row.get("ĐM GD gốc"),100)
+    gd_done = num(row.get("TH GD"),0)
+    research_done = num(row.get("Điểm NCKH TH"),0)
+    nvk_done = num(row.get("TH NVK"),0)
+    if status == "Tập sự":
+        gd_target = 0
+    else:
+        gd_target = gd_base * (0.5 if status == "Năm đầu sau tập sự/chuyển về" else 1)
+    gd_pct = 100 if gd_target == 0 else gd_done/gd_target*100
+    base_by_rank = {"GS/PGS":2,"TS":1.5,"ĐH/ThS":1}
+    if group == "GV thường":
+        research_standard = base_by_rank.get(rank,1)
+    elif group == "GV QL/kiêm nhiệm":
+        if g < 35: factors={"GS/PGS":0.7,"TS":0.5,"ĐH/ThS":0.35}
+        elif g <= 70: factors={"GS/PGS":1,"TS":0.75,"ĐH/ThS":0.5}
+        else: factors=base_by_rank
+        research_standard=factors.get(rank,1)
+    else:
+        research_standard=1
+    research_target = 0 if status=="Tập sự" else research_standard*(0.5 if status=="Năm đầu sau tập sự/chuyển về" else 1)*min(max(months_research,0),12)/12
+    research_pct = 100 if research_target==0 else research_done/research_target*100
+    nvk_target=350*(0.5 if status=="Năm đầu sau tập sự/chuyển về" else 1)
+    nvk_pct=0 if nvk_target<=0 else min(nvk_done/nvk_target*100,100)
+    total=gd_pct*.4+research_pct*.4+nvk_pct*.2
+    tntt=gd_pct*.5+research_pct*.5
+    teaching_quality=row.get("Chất lượng GD") or "Đạt"
+    common=row.get("Tiêu chí chung") or "Đạt"
+    discipline=row.get("Có QĐ kỷ luật") or "Không"
+    violation=num(row.get("Điểm vi phạm"),0)
+    enough_eval = "Có" if months_work>=6 or row.get("Nghỉ thai sản")=="Có" else "Không"
+    special_nkh = research_target==0 or research_done>=research_target
+    extra = (num(row.get("CT mục 1-6 B1"),0)==1 or num(row.get("HD SV NCKH đạt giải"),0)==1) if (group=="GV QL/kiêm nhiệm" or rank=="ĐH/ThS") else any(num(row.get(c),0)==1 for c in ["Có bài Q1/Q2","HD SV/HV có Q1/Q2","HD SV NCKH đạt giải","Bằng sáng chế","CT mục 3/5 B1"])
+    if enough_eval!="Có":
+        base_result="KHÔNG ĐÁNH GIÁ"
+    elif (teaching_quality!="Đạt" or common!="Đạt" or total<50 or (gd_target>0 and gd_done==0) or (research_target>0 and research_done==0) or (nvk_target>0 and nvk_done==0)):
+        base_result="KHTNV"
+    elif gd_pct>=100 and research_pct>=100 and nvk_pct>=100 and total>=150 and special_nkh and extra:
+        base_result="HTXSNV"
+    elif gd_pct>=100 and research_pct>=100 and nvk_pct>=100 and total>=100 and special_nkh:
+        base_result="HTTNV"
+    elif total>=50 and nvk_pct>=50:
+        base_result="HTNV"
+    else:
+        base_result="KHTNV"
+    if base_result=="KHÔNG ĐÁNH GIÁ":
+        final_result=base_result
+    elif discipline=="Có":
+        final_result="KHTNV"
+    else:
+        # Hạ mức theo điểm vi phạm; nghỉ 3 đến dưới 6 tháng tối đa HTNV
+        level={"HTXSNV":1,"HTTNV":2,"HTNV":3,"KHTNV":4}.get(base_result,4)
+        level=min(4,level+(3 if violation>=30 else 2 if violation>=20 else 1 if violation>=10 else 0))
+        if 3<=leave<6 and row.get("Nghỉ thai sản")!="Có":
+            level=max(level,3)
+        final_result={1:"HTXSNV",2:"HTTNV",3:"HTNV",4:"KHTNV"}[level]
+    reasons=[]
+    if enough_eval!="Có": reasons.append("Không đủ 06 tháng công tác (trừ thai sản)")
+    if teaching_quality!="Đạt": reasons.append("Chất lượng GD không đạt")
+    if common!="Đạt": reasons.append("Vi phạm tiêu chí chung")
+    if research_target>0 and research_done<research_target: reasons.append("NCKH chưa đạt ngưỡng HTT theo QĐ 4882")
+    if total>=150 and not extra: reasons.append("Thiếu điều kiện bổ sung NCKH để HTXSNV")
+    if violation>=10: reasons.append("Bị khống chế do điểm vi phạm")
+    if discipline=="Có": reasons.append("Có quyết định kỷ luật trong năm")
+    if 3<=leave<6 and row.get("Nghỉ thai sản")!="Có": reasons.append("Nghỉ 03-<06 tháng: tối đa HTNV")
+    if nvk_pct>=100: nvk_condition=True
+    else: nvk_condition=False
+    if teaching_quality!="Đạt" or common!="Đạt" or (gd_target>0 and gd_done==0) or (research_target>0 and research_done==0) or (nvk_target>0 and nvk_done==0) or tntt<50:
+        tntt_grade="D"
+    elif gd_pct>=100 and research_pct>=100 and nvk_pct>=100 and tntt>=400 and final_result=="HTXSNV" and nvk_done>=nvk_target:
+        tntt_grade="A"
+    elif gd_pct>=100 and research_pct>=100 and nvk_pct>=100 and 300<=tntt<400 and nvk_done>=nvk_target:
+        tntt_grade="B1"
+    elif gd_pct>=100 and research_pct>=100 and nvk_pct>=100 and 200<=tntt<300 and nvk_done>=nvk_target:
+        tntt_grade="B2"
+    elif gd_pct>=100 and research_pct>=100 and nvk_pct>=100 and 100<=tntt<200 and nvk_done>=nvk_target:
+        tntt_grade="B3"
+    elif gd_pct>0 and research_pct>0 and 50<=tntt<100 and teaching_quality=="Đạt" and common=="Đạt" and nvk_done>=nvk_target*.5:
+        tntt_grade="C"
+    else:
+        tntt_grade="CẦN XEM XÉT"
+    tntt_reasons=[]
+    if tntt_grade=="CẦN XEM XÉT": tntt_reasons.append("Không thuộc trọn vẹn tập điều kiện A/B1/B2/B3/C/D theo Điều 18; cần đơn vị/Hội đồng xem xét")
+    if tntt>=400 and final_result!="HTXSNV": tntt_reasons.append("Tổng TNTT >=400% nhưng xếp loại VC cuối không phải HTXSNV nên không đủ A")
+    if tntt>=100 and 0<gd_pct<100: tntt_reasons.append("Giảng dạy chưa đạt 100% định mức")
+    if tntt>=100 and 0<research_pct<100: tntt_reasons.append("NCKH chưa đạt 100% định mức/ngưỡng áp dụng")
+    if tntt>=100 and 0<nvk_pct<100: tntt_reasons.append("NVK chưa đạt 100% định mức")
+    if 50<=tntt<100 and 0<nvk_done<nvk_target*.5: tntt_reasons.append("NVK chưa đạt 50% định mức để xếp C")
+    return {
+      "ĐM GD áp dụng":gd_target,"%GD":gd_pct,"Ngưỡng NCKH chuẩn":research_standard,
+      "Ngưỡng NCKH áp dụng":research_target,"%NCKH":research_pct,
+      "ĐM NVK áp dụng":nvk_target,"%NVK":nvk_pct,"GD x 0,4":gd_pct*.4,
+      "NCKH x 0,4":research_pct*.4,"NVK x 0,2":nvk_pct*.2,"Tổng %":total,
+      "Đủ ĐK NCKH HTT":"Có" if special_nkh else "Không",
+      "Đủ ĐK bổ sung HTX":"Có" if extra else "Không",
+      "Đủ ĐK đánh giá":enough_eval,"Xếp loại cơ sở":base_result,
+      "Xếp loại cuối":final_result,"Cảnh báo / lý do":". ".join(reasons),
+      "Tổng % TNTT (GD 50% + NCKH 50%)":tntt,"Xếp TNTT":tntt_grade,
+      "Cảnh báo TNTT":". ".join(tntt_reasons)
+    }
 
-# Excel L4 classification formula, preserving its original condition order.
-if total_pct >= 150 and additional_status == "Đạt" and research_status == "Đạt" and rank != 3:
-    performance_rating = "HTXSNV"
-elif total_pct >= 100:
-    performance_rating = "HTTNV"
-elif rank == 3 and research_status == "Đạt" and total_pct >= 100:
-    performance_rating = "HTNV"
-else:
-    performance_rating = "KHTNV"
+def make_results(df):
+    rows=[]
+    for i,(_,r) in enumerate(df.iterrows(),1):
+        if str(r.get("Họ và tên") or "").strip():
+            d=r.to_dict(); d["STT"]=i; d.update(calculate(d)); rows.append(d)
+    return pd.DataFrame(rows)
 
-# Excel K9 and L9: income-increase score and classification.
-teaching_ratio = teaching_done / teaching_target if teaching_target > 0 else 0.0
-research_ratio = research_done / research_target if research_target > 0 else 0.0
-income_score = teaching_ratio * 100 * 0.5 + research_ratio * 100 * 0.5
+with st.sidebar:
+    st.header("Quản lý dữ liệu")
+    st.write("Nhập trực tiếp, hoặc tải lên bảng dữ liệu đã chuẩn bị.")
+    uploaded=st.file_uploader("Nhập dữ liệu Excel/CSV",type=["xlsx","csv"])
+    if uploaded is not None:
+        try:
+            if uploaded.name.lower().endswith(".csv"):
+                incoming=pd.read_csv(uploaded).reindex(columns=INPUT_COLS)
+            else:
+                incoming=pd.read_excel(uploaded).reindex(columns=INPUT_COLS)
+            st.session_state.records=incoming.fillna("")
+            st.success(f"Đã nạp {len(incoming)} dòng.")
+        except Exception as e: st.error(f"Không đọc được tệp: {e}")
+    if st.button("Thêm 10 dòng trống"):
+        st.session_state.records=pd.concat([st.session_state.records,pd.DataFrame([blank_record() for _ in range(10)])],ignore_index=True)
+    if st.button("Xóa toàn bộ dữ liệu"):
+        st.session_state.records=pd.DataFrame([blank_record() for _ in range(10)])
+    st.divider()
+    st.caption("Lưu ý: hãy tải xuống bản Excel sau khi nhập liệu để lưu trữ.")
 
-if (
-    income_score >= 400 and teaching_ratio >= 1 and research_ratio >= 1
-    and other_target >= 350 and performance_rating == "HTXSNV"
-):
-    income_rating = "A"
-elif income_score >= 300 and teaching_ratio >= 1 and research_ratio >= 1 and other_target >= 350:
-    income_rating = "B1"
-elif income_score >= 200 and teaching_ratio >= 1 and research_ratio >= 1 and other_target >= 350:
-    income_rating = "B2"
-elif income_score >= 100 and teaching_ratio >= 1 and research_ratio >= 1 and other_target >= 350:
-    income_rating = "B3"
-elif income_score >= 50 and teaching_ratio > 0 and research_ratio > 0 and other_target >= 175:
-    income_rating = "C"
-else:
-    income_rating = "D"
-
-# -------------------- Results --------------------
-st.divider()
-st.subheader("3. Kết quả đánh giá")
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Giảng dạy (đóng góp)", f"{teaching_pct:.2f}%")
-m2.metric("NCKH (đóng góp)", f"{research_pct:.2f}%")
-m3.metric("Nhiệm vụ khác (đóng góp)", f"{other_pct:.2f}%")
-m4.metric("Tổng tỷ lệ đạt được", f"{total_pct:.2f}%")
-
-r1, r2, r3 = st.columns(3)
-r1.metric("Điều kiện bổ sung", additional_status)
-r2.metric("Định mức NCKH", f"{research_threshold:g} điểm")
-r3.metric("Đủ định mức NCKH", research_status)
-
-st.markdown("#### Xếp loại")
-st.success(f"**Kết quả xếp loại: {performance_rating}**")
-st.markdown("#### Thu nhập tăng thêm")
-i1, i2 = st.columns(2)
-i1.metric("Điểm thu nhập tăng thêm", f"{income_score:.2f}")
-i2.metric("Mức xếp loại thu nhập tăng thêm", income_rating)
-
-with st.expander("Xem bảng tính chi tiết"):
-    detail = pd.DataFrame(
-        [
-            ["Giảng dạy", teaching_target, teaching_done, teaching_pct],
-            ["Nghiên cứu khoa học", research_target, research_done, research_pct],
-            ["Nhiệm vụ khác", other_target, other_done, other_pct],
-        ],
-        columns=["Nhóm tiêu chí", "Định mức/ngưỡng", "Thực hiện", "Tỷ lệ đóng góp (%)"],
+tab1,tab2,tab3=st.tabs(["Nhập liệu","Kết quả cá nhân","Tổng hợp"])
+with tab1:
+    st.subheader("Danh sách giảng viên – vùng nhập liệu")
+    st.info("Chỉ nhập các cột hiển thị. Các cột kết quả được ứng dụng tự tính. Đối với các tiêu chí dạng Có/Không, nhập 1 nếu có và 0 nếu không.")
+    edited=st.data_editor(
+        st.session_state.records,
+        num_rows="dynamic", use_container_width=True, hide_index=True,
+        column_config={
+          "Đơn vị":st.column_config.SelectboxColumn(options=DEPARTMENTS,required=False),
+          "Nhóm NCKH":st.column_config.SelectboxColumn(options=GROUPS),
+          "Chức danh/trình độ":st.column_config.SelectboxColumn(options=RANKS),
+          "Trạng thái định mức":st.column_config.SelectboxColumn(options=STATUS),
+          "Nghỉ thai sản":st.column_config.SelectboxColumn(options=YESNO),
+          "Chất lượng GD":st.column_config.SelectboxColumn(options=PASS),
+          "Tiêu chí chung":st.column_config.SelectboxColumn(options=PASS),
+          "Có QĐ kỷ luật":st.column_config.SelectboxColumn(options=YESNO),
+          "Tỷ lệ ĐM NCKH QL/KN (%)":st.column_config.NumberColumn(min_value=0,max_value=100,step=1),
+          "Số tháng công tác":st.column_config.NumberColumn(min_value=0,max_value=12,step=1),
+          "Số tháng tính NCKH":st.column_config.NumberColumn(min_value=0,max_value=12,step=1),
+        }, key="editor"
     )
-    st.dataframe(detail, use_container_width=True, hide_index=True)
-    st.write("**Các tiêu chí NCKH:**")
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "Tiêu chí": binary_labels,
-                "Giá trị": [binary_values[k] for k in binary_keys],
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.session_state.records=edited
+    st.caption(f"Số giảng viên đã nhập: {edited['Họ và tên'].fillna('').astype(str).str.strip().ne('').sum()}")
 
-# -------------------- Excel export --------------------
-def make_excel():
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Ket qua danh gia"
-    ws.merge_cells("A1:D1")
-    ws["A1"] = "KẾT QUẢ ĐÁNH GIÁ THỰC HIỆN CHỨC TRÁCH, NHIỆM VỤ"
-    ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
-    ws["A1"].fill = PatternFill("solid", fgColor="1F4E78")
-    ws["A1"].alignment = Alignment(horizontal="center")
-    rows = [
-        ["Thông tin", "Định mức/ngưỡng", "Thực hiện/giá trị", "Kết quả"],
-        ["Giảng dạy (40%)", teaching_target, teaching_done, teaching_pct],
-        ["NCKH (40%)", research_target, research_done, research_pct],
-        ["Nhiệm vụ khác (20%)", other_target, other_done, other_pct],
-        ["Tổng tỷ lệ đạt được", "", "", total_pct],
-        ["Chức danh", "", rank, rank_labels[rank]],
-        ["Ngưỡng NCKH áp dụng", research_threshold, research_score, research_status],
-        ["Điều kiện bổ sung", "", "", additional_status],
-        ["Xếp loại nhiệm vụ", "", "", performance_rating],
-        ["Điểm thu nhập tăng thêm", "", "", income_score],
-        ["Xếp loại thu nhập tăng thêm", "", "", income_rating],
-    ]
-    for row in rows:
-        ws.append(row)
-    ws.append([])
-    ws.append(["Tiêu chí NCKH", "Giá trị (1=có, 0=không)"])
-    for label, key in zip(binary_labels, binary_keys):
-        ws.append([label, binary_values[key]])
-    thin = Side(style="thin", color="D9E2F3")
-    for row in ws.iter_rows():
-        for cell in row:
-            cell.border = Border(bottom=thin)
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
-    for cell in ws[2]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="4472C4")
-    for col, width in {"A": 42, "B": 20, "C": 20, "D": 28}.items():
-        ws.column_dimensions[col].width = width
-    ws.freeze_panes = "A3"
-    ws.sheet_view.showGridLines = False
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
+results=make_results(st.session_state.records)
+with tab2:
+    st.subheader("Kết quả đánh giá từng giảng viên")
+    if results.empty: st.warning("Chưa có dữ liệu. Vui lòng nhập họ tên ở tab Nhập liệu.")
+    else:
+        query=st.text_input("Tìm theo họ tên hoặc mã cán bộ")
+        view=results.copy()
+        if query:
+            mask=view["Họ và tên"].astype(str).str.contains(query,case=False,na=False) | view["Mã CB"].astype(str).str.contains(query,case=False,na=False)
+            view=view[mask]
+        show=["STT","Mã CB","Họ và tên","Đơn vị","%GD","%NCKH","%NVK","Tổng %","Xếp loại cuối","Tổng % TNTT (GD 50% + NCKH 50%)","Xếp TNTT","Cảnh báo / lý do","Cảnh báo TNTT"]
+        st.dataframe(view[show],use_container_width=True,hide_index=True)
+with tab3:
+    st.subheader("Tổng hợp theo đơn vị")
+    if results.empty: st.warning("Chưa có dữ liệu.")
+    else:
+        categories=["HTXSNV","HTTNV","HTNV","KHTNV","KHÔNG ĐÁNH GIÁ"]
+        tntt_cats=["A","B1","B2","B3","C","D","CẦN XEM XÉT"]
+        summary=[]
+        for dep in DEPARTMENTS:
+            part=results[results["Đơn vị"]==dep]
+            item={"Đơn vị":dep,"Số GV có dữ liệu":len(part)}
+            item.update({x:int((part["Xếp loại cuối"]==x).sum()) for x in categories})
+            item.update({x:int((part["Xếp TNTT"]==x).sum()) for x in tntt_cats})
+            summary.append(item)
+        summ=pd.DataFrame(summary)
+        total={"Đơn vị":"TOÀN TRƯỜNG"}
+        for c in summ.columns[1:]: total[c]=int(summ[c].sum())
+        summ=pd.concat([summ,pd.DataFrame([total])],ignore_index=True)
+        st.dataframe(summ,use_container_width=True,hide_index=True)
+        st.bar_chart(summ[summ["Đơn vị"]!="TOÀN TRƯỜNG"].set_index("Đơn vị")[categories])
 
-st.download_button(
-    "⬇️ Tải kết quả đánh giá (Excel)",
-    data=make_excel(),
-    file_name=f"Ket_qua_danh_gia_{datetime.now():%Y%m%d_%H%M}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-with st.expander("Lưu ý về công thức và phạm vi chuyển đổi"):
-    st.markdown(
-        """
-        - Các định mức mặc định 270, 600 và 350 được lấy từ biểu mẫu Excel.
-        - Ngưỡng NCKH theo chức danh được giữ nguyên: GS/PGS = 2; TS = 1,5; ĐH/ThS = 1.
-        - Điều kiện bổ sung được xác định từ các cột C, D, E, G, H của biểu mẫu; cột F không tham gia công thức I8.
-        - Công thức xếp loại và xếp loại thu nhập tăng thêm được chuyển theo thứ tự điều kiện trong Excel gốc.
-        - Ứng dụng hiện sử dụng các định mức mặc định của file; nếu đơn vị có định mức khác, cần điều chỉnh trong mã nguồn hoặc yêu cầu bổ sung chức năng cấu hình.
-        """
-    )
+if not results.empty:
+    st.divider()
+    st.subheader("Xuất dữ liệu")
+    output=BytesIO()
+    with pd.ExcelWriter(output,engine="openpyxl") as writer:
+        results.to_excel(writer,index=False,sheet_name="KET_QUA")
+        if "summ" in locals(): summ.to_excel(writer,index=False,sheet_name="TONG_HOP")
+        st.session_state.records.to_excel(writer,index=False,sheet_name="DU_LIEU_NHAP")
+    st.download_button("Tải kết quả Excel",data=output.getvalue(),file_name="ket_qua_danh_gia_giang_vien.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
